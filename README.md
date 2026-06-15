@@ -54,13 +54,15 @@ The package exports the `paper-collect` command through `pyproject.toml`.
 ```bash
 paper-collect dblp-summary \
   --xml data/raw/dblp/dblp.xml.gz \
-  --max-year 2022
+  --year-from 2013 \
+  --year-to 2022
 ```
 
 ```bash
 paper-collect dblp-sample \
   --xml data/raw/dblp/dblp.xml.gz \
-  --max-year 2022 \
+  --year-from 2013 \
+  --year-to 2022 \
   --limit 5
 ```
 
@@ -68,7 +70,8 @@ paper-collect dblp-sample \
 paper-collect dblp-import \
   --xml data/raw/dblp/dblp.xml.gz \
   --db data/paper_collect.sqlite \
-  --max-year 2022
+  --year-from 2013 \
+  --year-to 2022
 ```
 
 After importing, inspect the manifest with:

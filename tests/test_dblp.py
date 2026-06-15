@@ -48,12 +48,24 @@ SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 </dblp>
 """
 
+SAMPLE_WITH_OLDER_XML = SAMPLE_XML.replace(
+    b"</dblp>",
+    b"""<inproceedings key="conf/ccs/Older12">
+<author>Older Author</author>
+<title>Older CCS Paper.</title>
+<year>2012</year>
+<booktitle>CCS</booktitle>
+<crossref>conf/ccs/2012</crossref>
+</inproceedings>
+</dblp>""",
+)
+
 
 class DblpTests(unittest.TestCase):
-    def write_sample(self, root: Path) -> Path:
+    def write_sample(self, root: Path, content: bytes = SAMPLE_XML) -> Path:
         path = root / "dblp.xml.gz"
         with gzip.open(path, "wb") as output:
-            output.write(SAMPLE_XML)
+            output.write(content)
         return path
 
     def test_summary_filters_main_conference_crossrefs_and_year(self) -> None:
@@ -64,6 +76,25 @@ class DblpTests(unittest.TestCase):
         self.assertEqual(summary["counts"], {"ccs": 1, "security": 0, "sp": 1})
         self.assertEqual(summary["by_year"]["sp"], {2022: 1})
         self.assertEqual(summary["by_year"]["ccs"], {2021: 1})
+
+    def test_min_year_filters_summary_sample_and_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = self.write_sample(root, SAMPLE_WITH_OLDER_XML)
+            venues = normalize_venues(["ccs"])
+            summary = summarize_dblp(xml_path, venues=venues, min_year=2013, max_year=2022)
+            records = collect_sample_records(xml_path, venues=venues, min_year=2013, max_year=2022, limit=10)
+            db_path = root / "papers.sqlite"
+            result = import_dblp(xml_path, db_path, venues=venues, min_year=2013, max_year=2022)
+
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute("select year, title from papers order by year").fetchall()
+
+        self.assertEqual(summary["year_filter"], {"min_year": 2013, "max_year": 2022})
+        self.assertEqual(summary["counts"], {"ccs": 1})
+        self.assertEqual([record.year for record in records], [2021])
+        self.assertEqual(result["min_year"], 2013)
+        self.assertEqual(rows, [(2021, "CCS Paper.")])
 
     def test_collect_sample_records_normalizes_url_and_doi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

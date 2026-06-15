@@ -82,6 +82,7 @@ def import_dblp(
     max_year: int = DEFAULT_MAX_YEAR,
     batch_size: int = 1000,
     stop_after_matches: int | None = None,
+    min_year: int | None = None,
 ) -> dict[str, object]:
     venues = set(venues or DEFAULT_VENUES)
     inserted = 0
@@ -104,6 +105,7 @@ def import_dblp(
             max_year=max_year,
             on_record=on_record,
             stop_after_matches=stop_after_matches,
+            min_year=min_year,
         )
         inserted += upsert_papers(conn, batch)
         conn.commit()
@@ -113,6 +115,7 @@ def import_dblp(
         "inserted_or_updated": inserted,
         "matched": stats["matched"],
         "venues": sorted(venues),
+        "min_year": min_year,
         "max_year": max_year,
         "stopped_early": stats["stopped_early"],
     }

@@ -88,12 +88,14 @@ class DblpHandler(ContentHandler):
         self,
         venues: set[str],
         max_year: int,
+        min_year: int | None = None,
         on_record: Callable[[DblpRecord], None] | None = None,
         stop_after_matches: int | None = None,
     ):
         super().__init__()
         self.venues = venues
         self.max_year = max_year
+        self.min_year = min_year
         self.on_record = on_record
         self.stop_after_matches = stop_after_matches
         self.matched = 0
@@ -132,7 +134,7 @@ class DblpHandler(ContentHandler):
 
         if name == "inproceedings" and self._inside_inproceedings:
             self.seen_inproceedings += 1
-            record = build_record(self._record_key, self._fields, self.venues, self.max_year)
+            record = build_record(self._record_key, self._fields, self.venues, self.max_year, self.min_year)
             self._inside_inproceedings = False
             self._record_key = None
             self._fields = {}
@@ -163,6 +165,7 @@ def scan_dblp(
     max_year: int = DEFAULT_MAX_YEAR,
     on_record: Callable[[DblpRecord], None] | None = None,
     stop_after_matches: int | None = None,
+    min_year: int | None = None,
 ) -> dict[str, object]:
     xml_path = Path(xml_path)
     venues = set(venues or DEFAULT_VENUES)
@@ -170,6 +173,7 @@ def scan_dblp(
     handler = DblpHandler(
         venues=venues,
         max_year=max_year,
+        min_year=min_year,
         on_record=on_record,
         stop_after_matches=stop_after_matches,
     )
@@ -194,15 +198,18 @@ def summarize_dblp(
     venues: set[str] | None = None,
     max_year: int = DEFAULT_MAX_YEAR,
     stop_after_matches: int | None = None,
+    min_year: int | None = None,
 ) -> dict[str, object]:
     counts: dict[str, int] = {venue: 0 for venue in sorted(venues or DEFAULT_VENUES)}
-    min_year: dict[str, int | None] = {venue: None for venue in counts}
+    min_seen_year: dict[str, int | None] = {venue: None for venue in counts}
     max_seen_year: dict[str, int | None] = {venue: None for venue in counts}
     by_year: dict[str, dict[int, int]] = {venue: {} for venue in counts}
 
     def on_record(record: DblpRecord) -> None:
         counts[record.venue] += 1
-        min_year[record.venue] = record.year if min_year[record.venue] is None else min(min_year[record.venue], record.year)
+        min_seen_year[record.venue] = (
+            record.year if min_seen_year[record.venue] is None else min(min_seen_year[record.venue], record.year)
+        )
         max_seen_year[record.venue] = (
             record.year if max_seen_year[record.venue] is None else max(max_seen_year[record.venue], record.year)
         )
@@ -214,11 +221,13 @@ def summarize_dblp(
         max_year=max_year,
         on_record=on_record,
         stop_after_matches=stop_after_matches,
+        min_year=min_year,
     )
     return {
+        "year_filter": {"min_year": min_year, "max_year": max_year},
         "max_year": max_year,
         "counts": counts,
-        "min_year": min_year,
+        "min_year": min_seen_year,
         "max_seen_year": max_seen_year,
         "by_year": {venue: dict(sorted(years.items())) for venue, years in by_year.items()},
         "scan": stats,
@@ -230,6 +239,7 @@ def collect_sample_records(
     venues: set[str] | None = None,
     max_year: int = DEFAULT_MAX_YEAR,
     limit: int = 10,
+    min_year: int | None = None,
 ) -> list[DblpRecord]:
     records: list[DblpRecord] = []
 
@@ -242,6 +252,7 @@ def collect_sample_records(
         max_year=max_year,
         on_record=on_record,
         stop_after_matches=limit,
+        min_year=min_year,
     )
     return records
 
@@ -251,6 +262,7 @@ def build_record(
     fields: dict[str, list[str]],
     venues: set[str],
     max_year: int,
+    min_year: int | None = None,
 ) -> DblpRecord | None:
     if not dblp_key:
         return None
@@ -263,6 +275,8 @@ def build_record(
     year_text = first(fields, "year")
     year = parse_year(year_text) or crossref_year
     if year is None or year > max_year:
+        return None
+    if min_year is not None and year < min_year:
         return None
 
     title = first(fields, "title")

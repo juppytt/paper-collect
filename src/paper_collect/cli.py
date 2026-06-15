@@ -101,7 +101,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_dblp_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--xml", required=True, type=Path, help="Path to dblp.xml or dblp.xml.gz.")
-    parser.add_argument("--max-year", type=int, default=DEFAULT_MAX_YEAR)
+    parser.add_argument(
+        "--min-year",
+        "--year-from",
+        dest="min_year",
+        type=int,
+        default=None,
+        help="Inclusive lower publication year.",
+    )
+    parser.add_argument(
+        "--max-year",
+        "--year-to",
+        dest="max_year",
+        type=int,
+        default=DEFAULT_MAX_YEAR,
+        help="Inclusive upper publication year.",
+    )
     parser.add_argument(
         "--venues",
         nargs="+",
@@ -111,7 +126,10 @@ def add_dblp_args(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if hasattr(args, "min_year") and args.min_year is not None and args.min_year > args.max_year:
+        parser.error("--min-year/--year-from cannot be greater than --max-year/--year-to")
 
     if args.command == "dblp-summary":
         venues = normalize_venues(args.venues)
@@ -120,13 +138,20 @@ def main(argv: list[str] | None = None) -> int:
             venues=venues,
             max_year=args.max_year,
             stop_after_matches=args.stop_after_matches,
+            min_year=args.min_year,
         )
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
 
     if args.command == "dblp-sample":
         venues = normalize_venues(args.venues)
-        for record in collect_sample_records(args.xml, venues=venues, max_year=args.max_year, limit=args.limit):
+        for record in collect_sample_records(
+            args.xml,
+            venues=venues,
+            max_year=args.max_year,
+            limit=args.limit,
+            min_year=args.min_year,
+        ):
             print(json.dumps(record.to_dict(), sort_keys=True))
         return 0
 
@@ -139,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             max_year=args.max_year,
             batch_size=args.batch_size,
             stop_after_matches=args.stop_after_matches,
+            min_year=args.min_year,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
