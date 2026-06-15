@@ -91,6 +91,28 @@ The downloader stores PDFs under `data/raw/pdf/<venue>/<year>/` and updates
 `abstract`, `pdf_url`, and `pdf_path` in SQLite. Use `--dry-run` before larger
 crawls and `--sleep` for polite venue crawling.
 
+CCS PDF downloads use a real Chrome/Chromium browser because plain HTTP clients
+receive ACM's Cloudflare challenge at `dl.acm.org`. Install the browser extra
+and run CCS slowly:
+
+```bash
+python3 -m pip install -e '.[browser]'
+PYTHONPATH=src python3 -m paper_collect.cli download \
+  --db data/paper_collect.sqlite \
+  --target pdf \
+  --venues ccs \
+  --year-from 2010 \
+  --year-to 2022 \
+  --output-dir data/raw \
+  --sleep 20 \
+  --timeout 90
+```
+
+Use `--chrome-path /path/to/chrome` if Chrome is not on a standard path. On a
+server without a display, try `--browser-headless`, but headed Chrome or Xvfb may
+be more reliable with ACM. At 20 seconds per paper, the 2010-2022 CCS DOI set
+takes at least about 11 hours before browser and download overhead.
+
 NDSS pages do not expose abstracts consistently across years. The NDSS downloader
 uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and
 2018-2022 extract abstracts from the first pages of the paper PDF. PDF text
@@ -109,14 +131,14 @@ title, and resolves abstracts and PDS PDF endpoints.
 	* NDSS paper pages expose direct PDF links; sampled 2022 pages did not expose
 	  HTML abstracts.
 	* IEEE S&P uses CSDL GraphQL/PDS endpoints instead of DOI landing pages.
-	* CCS should use SIGSAC proceedings pages for full-paper filtering,
-	  abstracts, and ACM DOI links.
+	* CCS browser PDF download works from ACM DOI links; abstracts and
+	  full-paper filtering still need SIGSAC/OpenAlex enrichment.
 * Open metadata APIs:
 	* Semantic Scholar, Unpaywall, and OpenAlex can enrich DOI, abstract,
 	  open-access URL, and license fields when official venue pages are
 	  incomplete.
-	* CCS PDF collection should prefer `openAccessPdf`, `url_for_pdf`, or OA
-	  repository landing pages from these APIs over ACM DL PDF crawling.
+	* CCS PDF collection can use ACM browser download, and should still prefer
+	  non-ACM OA repository PDFs when available.
 * Text extraction:
 	* GROBID or S2ORC doc2json should be used for full-text extraction instead
 	  of hand-written PDF parsing.

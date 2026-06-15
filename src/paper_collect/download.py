@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -110,6 +111,8 @@ class DownloadOptions:
     limit: int | None = None
     timeout: float = 30.0
     sleep_seconds: float = 0.0
+    chrome_path: str | None = None
+    browser_headless: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,7 @@ class CollectedArtifacts:
     abstract: str | None = None
     pdf_url: str | None = None
     pdf_response: FetchResponse | None = None
+    local_pdf_path: Path | None = None
 
 
 class VenueDownloader:
@@ -162,6 +166,7 @@ class VenueDownloader:
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         raise NotImplementedError
 
@@ -174,6 +179,7 @@ class GenericDownloader(VenueDownloader):
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         abstract = paper.abstract
         pdf_url = paper.pdf_url
@@ -210,6 +216,7 @@ class NDSSDownloader(VenueDownloader):
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         if paper.year in NDSS_HTML_ABSTRACT_YEARS:
             return self._collect_html_abstract_year(paper, need_abstract=need_abstract, need_pdf=need_pdf, timeout=timeout)
@@ -224,6 +231,7 @@ class NDSSDownloader(VenueDownloader):
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         abstract = paper.abstract
         pdf_url = paper.pdf_url
@@ -255,6 +263,7 @@ class NDSSDownloader(VenueDownloader):
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         pdf_url = paper.pdf_url
         pdf_response: FetchResponse | None = None
@@ -384,8 +393,139 @@ class SPDownloader(VenueDownloader):
         return detail
 
 
+class CCSDownloader(VenueDownloader):
+    def __init__(self) -> None:
+        self._browser: AcmBrowserPdfDownloader | None = None
+
+    def collect(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+        options: DownloadOptions | None = None,
+    ) -> CollectedArtifacts:
+        if not paper.doi:
+            return CollectedArtifacts(abstract=paper.abstract, pdf_url=paper.pdf_url)
+
+        pdf_url = acm_pdf_url(paper.doi)
+        local_pdf_path = None
+        if need_pdf and options is not None and not options.dry_run:
+            if self._browser is None:
+                self._browser = AcmBrowserPdfDownloader(
+                    chrome_path=options.chrome_path,
+                    headless=options.browser_headless,
+                    timeout=timeout,
+                )
+            try:
+                local_pdf_path = self._browser.download_pdf(pdf_url)
+            except FetchError:
+                self.close()
+                raise
+
+        return CollectedArtifacts(
+            abstract=paper.abstract,
+            pdf_url=pdf_url,
+            local_pdf_path=local_pdf_path,
+        )
+
+    def close(self) -> None:
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+
+
+class AcmBrowserPdfDownloader:
+    def __init__(self, *, chrome_path: str | None, headless: bool, timeout: float) -> None:
+        self.chrome_path = chrome_path
+        self.headless = headless
+        self.timeout = timeout
+        self._loop = None
+        self._browser_cm = None
+        self._browser = None
+        self._tab = None
+
+    def download_pdf(self, pdf_url: str) -> Path:
+        self._ensure_started()
+        return self._loop.run_until_complete(self._download_pdf(pdf_url))  # type: ignore[union-attr]
+
+    def close(self) -> None:
+        if self._loop is None:
+            return
+        try:
+            if self._browser_cm is not None:
+                self._loop.run_until_complete(self._browser_cm.__aexit__(None, None, None))
+        finally:
+            self._loop.close()
+            self._loop = None
+            self._browser_cm = None
+            self._browser = None
+            self._tab = None
+
+    def _ensure_started(self) -> None:
+        if self._loop is not None:
+            return
+        try:
+            import asyncio
+            from pydoll.browser.chromium import Chrome
+            from pydoll.browser.options import ChromiumOptions
+        except ImportError as exc:
+            raise FetchError("pydoll-python is required for CCS browser PDF downloads") from exc
+
+        self._loop = asyncio.new_event_loop()
+        options = ChromiumOptions()
+        chrome_binary = resolve_chrome_path(self.chrome_path)
+        if chrome_binary:
+            options.binary_location = chrome_binary
+        options.headless = self.headless
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--ignore-certificate-errors")
+        options.prompt_for_download = False
+        options.allow_automatic_downloads = True
+        options.open_pdf_externally = True
+
+        self._browser_cm = Chrome(options=options)
+        self._browser = self._loop.run_until_complete(self._browser_cm.__aenter__())
+        self._tab = self._loop.run_until_complete(self._browser.start())
+
+    async def _download_pdf(self, pdf_url: str) -> Path:
+        from pydoll.exceptions import DownloadTimeout
+
+        assert self._browser is not None
+        assert self._tab is not None
+
+        download_dir = Path(tempfile.mkdtemp(prefix="paper-collect-acm-"))
+        await self._browser.set_download_path(str(download_dir))
+        try:
+            async with self._tab.expect_download(keep_file_at=str(download_dir), timeout=self.timeout) as download:
+                try:
+                    await self._tab.go_to(pdf_url, timeout=self.timeout)
+                except Exception:
+                    pass
+        except DownloadTimeout as exc:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise FetchError(f"ACM browser PDF download timed out: {pdf_url}") from exc
+        except Exception as exc:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise FetchError(f"ACM browser PDF download failed: {pdf_url}: {exc}") from exc
+
+        file_path = Path(download.file_path) if download.file_path else newest_file(download_dir)
+        if file_path is None or not file_path.exists():
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise FetchError(f"ACM browser PDF download produced no file: {pdf_url}")
+        first = file_path.read_bytes()[:5]
+        if not first.startswith(b"%PDF-"):
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise FetchError(f"ACM browser download was not a PDF: {pdf_url}")
+        return file_path
+
+
 GENERIC_DOWNLOADER = GenericDownloader()
 VENUE_DOWNLOADERS: dict[str, VenueDownloader] = {
+    "ccs": CCSDownloader(),
     "ndss": NDSSDownloader(),
     "sp": SPDownloader(),
 }
@@ -423,18 +563,21 @@ def download_papers(
     skipped = 0
     failed = 0
 
-    for index, paper in enumerate(rows, start=1):
-        try:
-            changed_abstract, changed_pdf = process_paper(conn, paper, options)
-            updated_abstracts += int(changed_abstract)
-            downloaded_pdfs += int(changed_pdf)
-            if not changed_abstract and not changed_pdf:
-                skipped += 1
-            if options.sleep_seconds > 0 and index < len(rows):
-                time.sleep(options.sleep_seconds)
-        except FetchError as exc:
-            failed += 1
-            print(f"failed paper_id={paper.id} venue={paper.venue} year={paper.year}: {exc}")
+    try:
+        for index, paper in enumerate(rows, start=1):
+            try:
+                changed_abstract, changed_pdf = process_paper(conn, paper, options)
+                updated_abstracts += int(changed_abstract)
+                downloaded_pdfs += int(changed_pdf)
+                if not changed_abstract and not changed_pdf:
+                    skipped += 1
+                if options.sleep_seconds > 0 and index < len(rows):
+                    time.sleep(options.sleep_seconds)
+            except FetchError as exc:
+                failed += 1
+                print(f"failed paper_id={paper.id} venue={paper.venue} year={paper.year}: {exc}")
+    finally:
+        close_downloaders()
 
     return DownloadResult(
         selected=len(rows),
@@ -456,10 +599,12 @@ def process_paper(conn: sqlite3.Connection, paper: PaperRow, options: DownloadOp
         need_abstract=need_abstract,
         need_pdf=need_pdf,
         timeout=options.timeout,
+        options=options,
     )
     abstract = artifacts.abstract
     pdf_url = artifacts.pdf_url
     pdf_response = artifacts.pdf_response
+    local_pdf_path = artifacts.local_pdf_path
 
     changed_abstract = False
     changed_pdf = False
@@ -471,16 +616,22 @@ def process_paper(conn: sqlite3.Connection, paper: PaperRow, options: DownloadOp
     if need_pdf and pdf_url:
         pdf_path = pdf_output_path(options.output_dir, paper, pdf_url)
         if not options.dry_run:
-            if pdf_response is not None and pdf_response.is_pdf:
+            if local_pdf_path is not None:
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(local_pdf_path), pdf_path)
+                shutil.rmtree(local_pdf_path.parent, ignore_errors=True)
+                pdf_response = None
+            elif pdf_response is not None and pdf_response.is_pdf:
                 pass
             elif is_pdf_url(pdf_url):
                 pdf_response = fetch_url(pdf_url, timeout=options.timeout)
             else:
                 pdf_response = fetch_url(pdf_url, timeout=options.timeout)
-            if pdf_response is None or not pdf_response.is_pdf:
+            if local_pdf_path is None and (pdf_response is None or not pdf_response.is_pdf):
                 raise FetchError(f"PDF URL did not return a PDF: {pdf_url}")
-            pdf_path.parent.mkdir(parents=True, exist_ok=True)
-            pdf_path.write_bytes(pdf_response.body)
+            if pdf_response is not None:
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                pdf_path.write_bytes(pdf_response.body)
         changed_pdf = True
         updates["pdf_url"] = pdf_url
         updates["pdf_path"] = str(pdf_path)
@@ -584,6 +735,49 @@ def candidate_urls(paper: PaperRow) -> list[str]:
     if paper.doi:
         urls.append(f"https://doi.org/{paper.doi}")
     return dedupe(urls)
+
+
+def acm_pdf_url(doi: str) -> str:
+    return f"https://dl.acm.org/doi/pdf/{doi}"
+
+
+def resolve_chrome_path(explicit_path: str | None) -> str | None:
+    if explicit_path:
+        return explicit_path
+    env_path = os.environ.get("PAPER_COLLECT_CHROME")
+    if env_path:
+        return env_path
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def newest_file(path: Path) -> Path | None:
+    files = [candidate for candidate in path.iterdir() if candidate.is_file()]
+    if not files:
+        return None
+    return max(files, key=lambda candidate: candidate.stat().st_mtime)
+
+
+def close_downloaders() -> None:
+    seen: set[int] = set()
+    for downloader in [*VENUE_DOWNLOADERS.values(), GENERIC_DOWNLOADER]:
+        if id(downloader) in seen:
+            continue
+        seen.add(id(downloader))
+        close = getattr(downloader, "close", None)
+        if callable(close):
+            close()
 
 
 def ndss_2016_current_pdf_url(url: str) -> str:

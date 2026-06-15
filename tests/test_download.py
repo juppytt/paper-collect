@@ -8,11 +8,14 @@ from pathlib import Path
 from unittest import mock
 
 from paper_collect.download import (
+    CCSDownloader,
+    CollectedArtifacts,
     DownloadOptions,
     FetchResponse,
     PaperPageParser,
     PaperRow,
     SPDownloader,
+    acm_pdf_url,
     csdl_pdf_url,
     extract_abstract_from_text,
     ndss_2016_current_pdf_url,
@@ -294,6 +297,97 @@ class DownloadTests(unittest.TestCase):
 
         self.assertEqual(artifacts.abstract, abstract)
         self.assertEqual(artifacts.pdf_url, csdl_pdf_url("1FlQIbn9p7y"))
+
+    def test_ccs_downloader_uses_acm_pdf_url_for_doi_dry_run(self) -> None:
+        paper = PaperRow(
+            id=1,
+            dblp_key="conf/ccs/Example18",
+            venue="ccs",
+            year=2018,
+            title="Example CCS Paper",
+            doi="10.1145/3243734.3243858",
+            ee=("https://doi.org/10.1145/3243734.3243858",),
+            abstract=None,
+            pdf_url=None,
+            pdf_path=None,
+        )
+        options = DownloadOptions(targets=frozenset({"pdf"}), output_dir=Path("data/raw"), dry_run=True)
+
+        artifacts = CCSDownloader().collect(
+            paper,
+            need_abstract=False,
+            need_pdf=True,
+            timeout=30.0,
+            options=options,
+        )
+
+        self.assertEqual(artifacts.pdf_url, acm_pdf_url("10.1145/3243734.3243858"))
+        self.assertIsNone(artifacts.local_pdf_path)
+
+    def test_process_paper_moves_local_pdf_download(self) -> None:
+        class FakeDownloader:
+            def collect(self, *args, **kwargs):
+                return CollectedArtifacts(
+                    pdf_url="https://dl.acm.org/doi/pdf/10.1145/3243734.3243858",
+                    local_pdf_path=source_pdf,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_dir = Path(tmp) / "browser"
+            source_dir.mkdir()
+            source_pdf = source_dir / "paper.pdf"
+            source_pdf.write_bytes(b"%PDF-1.5\nbody")
+            conn = sqlite3.connect(":memory:")
+            conn.execute(
+                """
+                create table papers (
+                    id integer primary key,
+                    dblp_key text not null,
+                    venue text not null,
+                    year integer not null,
+                    title text not null,
+                    doi text,
+                    ee_json text not null,
+                    abstract text,
+                    pdf_url text,
+                    pdf_path text,
+                    updated_at text
+                )
+                """
+            )
+            conn.execute(
+                """
+                insert into papers (id, dblp_key, venue, year, title, doi, ee_json)
+                values (1, 'conf/ccs/Example18', 'ccs', 2018, 'Example CCS Paper', '10.1145/3243734.3243858', '[]')
+                """
+            )
+            paper = PaperRow(
+                id=1,
+                dblp_key="conf/ccs/Example18",
+                venue="ccs",
+                year=2018,
+                title="Example CCS Paper",
+                doi="10.1145/3243734.3243858",
+                ee=(),
+                abstract=None,
+                pdf_url=None,
+                pdf_path=None,
+            )
+            options = DownloadOptions(targets=frozenset({"pdf"}), output_dir=Path(tmp) / "raw")
+
+            with mock.patch("paper_collect.download.downloader_for", return_value=FakeDownloader()):
+                with mock.patch("paper_collect.download.fetch_url") as fetch_url:
+                    changed_abstract, changed_pdf = process_paper(conn, paper, options)
+
+            fetch_url.assert_not_called()
+            self.assertFalse(changed_abstract)
+            self.assertTrue(changed_pdf)
+            row = conn.execute("select pdf_url, pdf_path from papers where id = 1").fetchone()
+            self.assertEqual(row[0], "https://dl.acm.org/doi/pdf/10.1145/3243734.3243858")
+            final_pdf = Path(row[1])
+            self.assertTrue(final_pdf.exists())
+            self.assertTrue(final_pdf.read_bytes().startswith(b"%PDF-"))
+            self.assertFalse(source_pdf.exists())
 
     def test_extract_abstract_from_pdf_text(self) -> None:
         abstract = " ".join(["This paper studies anonymous communication systems."] * 12)

@@ -65,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--dry-run", action="store_true", help="Resolve rows and URLs without writing files or DB updates.")
     download.add_argument("--timeout", type=float, default=30.0, help="Per-request timeout in seconds.")
     download.add_argument("--sleep", type=float, default=0.0, help="Delay between papers in seconds.")
+    download.add_argument("--chrome-path", default=None, help="Chrome/Chromium binary for browser-based downloaders.")
+    download.add_argument("--browser-headless", action="store_true", help="Run browser-based downloaders in headless mode.")
 
     return parser
 
@@ -124,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             timeout=args.timeout,
             sleep_seconds=args.sleep,
+            chrome_path=args.chrome_path,
+            browser_headless=args.browser_headless,
         )
         with sqlite3.connect(args.db) as conn:
             result = download_papers(

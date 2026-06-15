@@ -9,6 +9,11 @@ description = "Reusable utilities for collecting paper metadata, PDFs, and extra
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+browser = [
+    "pydoll-python>=2.20.2",
+]
+
 [project.scripts]
 paper-collect = "paper_collect.cli:main"
 
