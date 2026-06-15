@@ -91,26 +91,32 @@ The downloader stores PDFs under `data/raw/pdf/<venue>/<year>/` and updates
 `abstract`, `pdf_url`, and `pdf_path` in SQLite. Use `--dry-run` before larger
 crawls and `--sleep` for polite venue crawling.
 
-NDSS pages do not expose abstracts consistently across years. The NDSS adapter
+NDSS pages do not expose abstracts consistently across years. The NDSS downloader
 uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and
 2018-2022 extract abstracts from the first pages of the paper PDF. PDF text
 extraction requires `pdftotext` from Poppler.
 
-## Next Adapters
+S&P uses IEEE Computer Society CSDL instead of DOI landing pages. The S&P
+downloader queries the CSDL proceedings group, maps the target year to a
+proceeding ID, matches CSDL article rows against DBLP rows by DOI or normalized
+title, and resolves abstracts and PDS PDF endpoints.
+
+## Next Downloaders
 
 * Venue pages:
 	* USENIX Security proceedings pages usually expose paper pages, abstracts,
 	  and PDF links directly.
 	* NDSS paper pages expose direct PDF links; sampled 2022 pages did not expose
 	  HTML abstracts.
-	* IEEE S&P should use the IEEE CSDL GraphQL/PDS endpoints instead of DOI
-	  landing pages.
-	* CCS can use SIGSAC proceedings pages for abstracts; ACM DL PDF crawling is
-	  not reliable from a simple script because it may return bot challenges.
+	* IEEE S&P uses CSDL GraphQL/PDS endpoints instead of DOI landing pages.
+	* CCS should use SIGSAC proceedings pages for full-paper filtering,
+	  abstracts, and ACM DOI links.
 * Open metadata APIs:
-	* OpenAlex, Semantic Scholar, Crossref, and Unpaywall can enrich DOI,
-	  abstract, open-access URL, and license fields when official venue pages
-	  are incomplete.
+	* Semantic Scholar, Unpaywall, and OpenAlex can enrich DOI, abstract,
+	  open-access URL, and license fields when official venue pages are
+	  incomplete.
+	* CCS PDF collection should prefer `openAccessPdf`, `url_for_pdf`, or OA
+	  repository landing pages from these APIs over ACM DL PDF crawling.
 * Text extraction:
 	* GROBID or S2ORC doc2json should be used for full-text extraction instead
 	  of hand-written PDF parsing.

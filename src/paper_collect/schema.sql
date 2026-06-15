@@ -25,10 +25,10 @@ create index if not exists idx_papers_crossref on papers (crossref);
 create index if not exists idx_papers_doi on papers (doi);
 
 create table if not exists crawl_state (
-    adapter text not null,
+    downloader text not null,
     scope text not null,
     status text not null,
     payload_json text,
     updated_at text not null default current_timestamp,
-    primary key (adapter, scope)
+    primary key (downloader, scope)
 );

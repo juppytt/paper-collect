@@ -12,6 +12,8 @@ from paper_collect.download import (
     FetchResponse,
     PaperPageParser,
     PaperRow,
+    SPDownloader,
+    csdl_pdf_url,
     extract_abstract_from_text,
     ndss_2016_current_pdf_url,
     pdf_output_path,
@@ -239,6 +241,59 @@ class DownloadTests(unittest.TestCase):
         fetch_url.assert_called_once_with(current_url, timeout=30.0)
         self.assertTrue(changed_abstract)
         self.assertTrue(changed_pdf)
+
+    def test_sp_downloader_uses_csdl_graphql(self) -> None:
+        abstract = " ".join(["This paper studies protocol state machine extraction."] * 12)
+        paper = PaperRow(
+            id=1,
+            dblp_key="conf/sp/Example22",
+            venue="sp",
+            year=2022,
+            title="Automated Attack Synthesis by Extracting Finite State Machines from Protocol Specification Documents.",
+            doi="10.1109/SP46214.2022.9833673",
+            ee=("https://doi.org/10.1109/SP46214.2022.9833673",),
+            abstract=None,
+            pdf_url=None,
+            pdf_path=None,
+        )
+        proceedings = {
+            "data": {
+                "proceedings": [
+                    {"id": "1FlQurJZBuw", "acronym": "sp", "title": "SP 2022", "year": 2022},
+                ]
+            }
+        }
+        toc = {
+            "data": {
+                "articlesByProceeding": {
+                    "articleResults": [
+                        {
+                            "id": "1FlQIbn9p7y",
+                            "doi": "10.1109/SP46214.2022.9833673",
+                            "title": paper.title.rstrip("."),
+                            "year": 2022,
+                        }
+                    ]
+                }
+            }
+        }
+        detail = {
+            "data": {
+                "article": {
+                    "id": "1FlQIbn9p7y",
+                    "doi": "10.1109/SP46214.2022.9833673",
+                    "title": paper.title.rstrip("."),
+                    "abstract": f"<p>{abstract}</p>",
+                    "hasPdf": True,
+                }
+            }
+        }
+
+        with mock.patch("paper_collect.download.post_graphql_json", side_effect=[proceedings, toc, detail]):
+            artifacts = SPDownloader().collect(paper, need_abstract=True, need_pdf=True, timeout=30.0)
+
+        self.assertEqual(artifacts.abstract, abstract)
+        self.assertEqual(artifacts.pdf_url, csdl_pdf_url("1FlQIbn9p7y"))
 
     def test_extract_abstract_from_pdf_text(self) -> None:
         abstract = " ".join(["This paper studies anonymous communication systems."] * 12)
