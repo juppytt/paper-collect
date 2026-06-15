@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-collect"
+version = "0.1.0"
+description = "Reusable utilities for collecting paper metadata, PDFs, and extracted text."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+paper-collect = "paper_collect.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+paper_collect = ["schema.sql"]
