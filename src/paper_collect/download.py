@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import http.client
 import json
 import os
 import re
@@ -817,6 +818,8 @@ def post_graphql_json(
         raise FetchError(f"HTTP {exc.code} for {url}") from exc
     except urllib.error.URLError as exc:
         raise FetchError(f"could not fetch {url}: {exc.reason}") from exc
+    except http.client.IncompleteRead as exc:
+        raise FetchError(f"incomplete read from {url}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise FetchError(f"invalid JSON from {url}") from exc
     if not isinstance(payload, dict):
@@ -893,6 +896,8 @@ def fetch_url(url: str, *, timeout: float) -> FetchResponse:
         raise FetchError(f"HTTP {exc.code} for {url}") from exc
     except urllib.error.URLError as exc:
         raise FetchError(f"could not fetch {url}: {exc.reason}") from exc
+    except http.client.IncompleteRead as exc:
+        raise FetchError(f"incomplete read from {url}: {exc}") from exc
 
 
 class FetchError(RuntimeError):
