@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 from .db import import_dblp
 from .dblp import DEFAULT_MAX_YEAR, DEFAULT_VENUES, collect_sample_records, normalize_venues, summarize_dblp
+from .download import DownloadOptions, download_papers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +39,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop after this many matched papers. Intended for import smoke tests.",
     )
 
+    download = subparsers.add_parser("download", help="Download abstracts and/or PDFs for manifest rows.")
+    download.add_argument("--db", required=True, type=Path, help="SQLite manifest path.")
+    download.add_argument(
+        "--target",
+        choices=("abstract", "pdf", "both"),
+        default="both",
+        help="Which artifact to collect.",
+    )
+    download.add_argument(
+        "--venues",
+        nargs="+",
+        default=None,
+        help="Venue codes: sp, ccs, security, uss, ndss. Omit to include all venues.",
+    )
+    download.add_argument("--year", type=int, default=None, help="Exact publication year.")
+    download.add_argument("--year-from", type=int, default=None, help="Inclusive lower publication year.")
+    download.add_argument("--year-to", type=int, default=None, help="Inclusive upper publication year.")
+    download.add_argument("--paper-id", dest="paper_ids", action="append", type=int, default=[], help="Manifest paper id.")
+    download.add_argument("--dblp-key", dest="dblp_keys", action="append", default=[], help="Exact DBLP key.")
+    download.add_argument("--title-contains", default=None, help="Case-insensitive title substring filter.")
+    download.add_argument("--output-dir", type=Path, default=Path("data/raw"), help="Root directory for downloaded files.")
+    download.add_argument("--limit", type=int, default=None, help="Maximum rows to process.")
+    download.add_argument("--force", action="store_true", help="Refresh artifacts even if already present.")
+    download.add_argument("--dry-run", action="store_true", help="Resolve rows and URLs without writing files or DB updates.")
+    download.add_argument("--timeout", type=float, default=30.0, help="Per-request timeout in seconds.")
+    download.add_argument("--sleep", type=float, default=0.0, help="Delay between papers in seconds.")
+
     return parser
 
 
@@ -53,9 +82,9 @@ def add_dblp_args(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    venues = normalize_venues(args.venues)
 
     if args.command == "dblp-summary":
+        venues = normalize_venues(args.venues)
         summary = summarize_dblp(
             args.xml,
             venues=venues,
@@ -66,11 +95,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "dblp-sample":
+        venues = normalize_venues(args.venues)
         for record in collect_sample_records(args.xml, venues=venues, max_year=args.max_year, limit=args.limit):
             print(json.dumps(record.to_dict(), sort_keys=True))
         return 0
 
     if args.command == "dblp-import":
+        venues = normalize_venues(args.venues)
         result = import_dblp(
             xml_path=args.xml,
             db_path=args.db,
@@ -80,6 +111,33 @@ def main(argv: list[str] | None = None) -> int:
             stop_after_matches=args.stop_after_matches,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "download":
+        venues = normalize_venues(args.venues) if args.venues else None
+        targets = frozenset({"abstract", "pdf"} if args.target == "both" else {args.target})
+        options = DownloadOptions(
+            targets=targets,
+            output_dir=args.output_dir,
+            force=args.force,
+            dry_run=args.dry_run,
+            limit=args.limit,
+            timeout=args.timeout,
+            sleep_seconds=args.sleep,
+        )
+        with sqlite3.connect(args.db) as conn:
+            result = download_papers(
+                conn,
+                venues=venues,
+                year=args.year,
+                year_from=args.year_from,
+                year_to=args.year_to,
+                paper_ids=args.paper_ids,
+                dblp_keys=args.dblp_keys,
+                title_contains=args.title_contains,
+                options=options,
+            )
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return 0
 
     raise AssertionError(f"unhandled command: {args.command}")

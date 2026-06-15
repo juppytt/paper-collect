@@ -16,6 +16,8 @@ PDF links, downloaded PDFs, and extracted full text.
 	* `security`: USENIX Security Symposium
 	* `ndss`: Network and Distributed System Security Symposium
 * Store a normalized seed manifest in SQLite.
+* Download abstracts and PDFs from manifest rows using venue/DOI links where
+  direct crawling is allowed.
 * Keep raw downloads and generated databases out of git.
 
 ## Data Layout
@@ -64,13 +66,42 @@ sqlite3 data/paper_collect.sqlite \
   'select venue, count(*) from papers group by venue order by venue;'
 ```
 
+Download abstracts, PDFs, or both from selected manifest rows:
+
+```bash
+PYTHONPATH=src python3 -m paper_collect.cli download \
+  --db data/paper_collect.sqlite \
+  --target abstract \
+  --venues security ndss \
+  --year-from 2020 \
+  --year-to 2022 \
+  --limit 20
+```
+
+```bash
+PYTHONPATH=src python3 -m paper_collect.cli download \
+  --db data/paper_collect.sqlite \
+  --target pdf \
+  --venues ndss \
+  --year 2022 \
+  --output-dir data/raw
+```
+
+The downloader stores PDFs under `data/raw/pdf/<venue>/<year>/` and updates
+`abstract`, `pdf_url`, and `pdf_path` in SQLite. Use `--dry-run` before larger
+crawls and `--sleep` for polite venue crawling.
+
 ## Next Adapters
 
 * Venue pages:
 	* USENIX Security proceedings pages usually expose paper pages, abstracts,
 	  and PDF links directly.
-	* IEEE S&P, CCS, and NDSS need venue-specific page adapters because DBLP
-	  does not carry abstracts.
+	* NDSS paper pages expose direct PDF links; sampled 2022 pages did not expose
+	  HTML abstracts.
+	* IEEE S&P should use the IEEE CSDL GraphQL/PDS endpoints instead of DOI
+	  landing pages.
+	* CCS can use SIGSAC proceedings pages for abstracts; ACM DL PDF crawling is
+	  not reliable from a simple script because it may return bot challenges.
 * Open metadata APIs:
 	* OpenAlex, Semantic Scholar, Crossref, and Unpaywall can enrich DOI,
 	  abstract, open-access URL, and license fields when official venue pages
