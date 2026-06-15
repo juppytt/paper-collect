@@ -4,7 +4,10 @@ import hashlib
 import html
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +23,17 @@ PDF_CONTENT_TYPES = ("application/pdf", "application/x-pdf")
 PDF_EXT_RE = re.compile(r"\.pdf(?:[?#].*)?$", re.IGNORECASE)
 WHITESPACE_RE = re.compile(r"\s+")
 ABSTRACT_CONTAINER_HINTS = ("abstract", "paper-description")
+PDF_ABSTRACT_BOUNDARY_RE = re.compile(
+    r"(?is)\babstract\s*[\-:\u2013\u2014]*\s*"
+    r"(?P<body>.*?)"
+    r"(?=\n\s*(?:index terms|keywords)\b"
+    r"|\n\s*(?:I\.?\s*)?\n?\s*(?:I\s*N\s*T\s*R\s*O\s*D\s*U\s*C\s*T\s*I\s*O\s*N|introduction)\b"
+    r"|\n\s*(?:1|I)\.?\s+introduction\b)"
+)
+PDF_ABSTRACT_START_RE = re.compile(r"(?is)\babstract\s*[\-:\u2013\u2014]*\s*")
+PDF_ABSTRACT_MAX_PAGES = 2
+NDSS_HTML_ABSTRACT_YEARS = frozenset({2010, 2011, 2012, 2013, 2014, 2015, 2017})
+NDSS_PDF_ABSTRACT_YEARS = frozenset({2016, 2018, 2019, 2020, 2021, 2022})
 
 
 @dataclass(frozen=True)
@@ -82,6 +96,157 @@ class FetchResponse:
         return normalized in PDF_CONTENT_TYPES or self.body.startswith(b"%PDF-")
 
 
+@dataclass(frozen=True)
+class CollectedArtifacts:
+    abstract: str | None = None
+    pdf_url: str | None = None
+    pdf_response: FetchResponse | None = None
+
+
+class VenueAdapter:
+    def collect(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+    ) -> CollectedArtifacts:
+        raise NotImplementedError
+
+
+class GenericAdapter(VenueAdapter):
+    def collect(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+    ) -> CollectedArtifacts:
+        abstract = paper.abstract
+        pdf_url = paper.pdf_url
+        pdf_response: FetchResponse | None = None
+
+        for url in candidate_urls(paper):
+            if is_pdf_url(url):
+                if need_pdf:
+                    pdf_url = pdf_url or url
+                continue
+            if need_abstract or (need_pdf and not pdf_url):
+                response = fetch_url(url, timeout=timeout)
+                if response.is_pdf:
+                    if need_pdf:
+                        pdf_url = pdf_url or response.url
+                        pdf_response = response
+                    continue
+                page = PaperPageParser(response.text, base_url=response.url)
+                if need_abstract and not abstract:
+                    abstract = page.abstract
+                if need_pdf and not pdf_url:
+                    pdf_url = page.best_pdf_url
+                if (not need_abstract or abstract) and (not need_pdf or pdf_url):
+                    break
+
+        return CollectedArtifacts(abstract=abstract, pdf_url=pdf_url, pdf_response=pdf_response)
+
+
+class NDSSAdapter(VenueAdapter):
+    def collect(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+    ) -> CollectedArtifacts:
+        if paper.year in NDSS_HTML_ABSTRACT_YEARS:
+            return self._collect_html_abstract_year(paper, need_abstract=need_abstract, need_pdf=need_pdf, timeout=timeout)
+        if paper.year in NDSS_PDF_ABSTRACT_YEARS:
+            return self._collect_pdf_abstract_year(paper, need_abstract=need_abstract, need_pdf=need_pdf, timeout=timeout)
+        raise FetchError(f"unsupported NDSS year policy: {paper.year}")
+
+    def _collect_html_abstract_year(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+    ) -> CollectedArtifacts:
+        abstract = paper.abstract
+        pdf_url = paper.pdf_url
+
+        for url in self._source_urls(paper):
+            if is_pdf_url(url):
+                if need_pdf:
+                    pdf_url = pdf_url or url
+                continue
+            response = fetch_url(url, timeout=timeout)
+            if response.is_pdf:
+                if need_pdf:
+                    pdf_url = pdf_url or response.url
+                continue
+            page = PaperPageParser(response.text, base_url=response.url)
+            if need_abstract and not abstract:
+                abstract = page.abstract
+            if need_pdf and not pdf_url:
+                pdf_url = page.best_pdf_url
+            if (not need_abstract or abstract) and (not need_pdf or pdf_url):
+                break
+
+        return CollectedArtifacts(abstract=abstract, pdf_url=pdf_url)
+
+    def _collect_pdf_abstract_year(
+        self,
+        paper: PaperRow,
+        *,
+        need_abstract: bool,
+        need_pdf: bool,
+        timeout: float,
+    ) -> CollectedArtifacts:
+        pdf_url = paper.pdf_url
+        pdf_response: FetchResponse | None = None
+
+        for url in self._source_urls(paper):
+            if is_pdf_url(url):
+                pdf_url = pdf_url or url
+                continue
+            response = fetch_url(url, timeout=timeout)
+            if response.is_pdf:
+                pdf_url = pdf_url or response.url
+                pdf_response = response
+                continue
+            page = PaperPageParser(response.text, base_url=response.url)
+            if not pdf_url:
+                pdf_url = page.best_pdf_url
+            if pdf_url:
+                break
+
+        abstract = paper.abstract
+        if need_abstract:
+            if not pdf_url:
+                raise FetchError(f"NDSS {paper.year} requires a PDF URL for abstract extraction")
+            pdf_response = pdf_response or fetch_url(pdf_url, timeout=timeout)
+            abstract = extract_abstract_from_pdf_response(pdf_response)
+
+        return CollectedArtifacts(abstract=abstract, pdf_url=pdf_url, pdf_response=pdf_response)
+
+    def _source_urls(self, paper: PaperRow) -> list[str]:
+        urls = candidate_urls(paper)
+        if paper.year == 2016:
+            return dedupe(ndss_2016_current_pdf_url(url) for url in urls)
+        return urls
+
+
+GENERIC_ADAPTER = GenericAdapter()
+VENUE_ADAPTERS: dict[str, VenueAdapter] = {"ndss": NDSSAdapter()}
+
+
+def adapter_for(venue: str) -> VenueAdapter:
+    return VENUE_ADAPTERS.get(venue, GENERIC_ADAPTER)
+
+
 def download_papers(
     conn: sqlite3.Connection,
     *,
@@ -138,29 +303,15 @@ def process_paper(conn: sqlite3.Connection, paper: PaperRow, options: DownloadOp
     if not need_abstract and not need_pdf:
         return False, False
 
-    abstract = paper.abstract
-    pdf_url = paper.pdf_url
-    landing_pages: list[tuple[str, FetchResponse]] = []
-
-    for url in candidate_urls(paper):
-        if is_pdf_url(url):
-            if need_pdf:
-                pdf_url = pdf_url or url
-            continue
-        if need_abstract or (need_pdf and not pdf_url):
-            response = fetch_url(url, timeout=options.timeout)
-            if response.is_pdf:
-                if need_pdf:
-                    pdf_url = pdf_url or response.url
-                continue
-            landing_pages.append((url, response))
-            page = PaperPageParser(response.text, base_url=response.url)
-            if need_abstract and not abstract:
-                abstract = page.abstract
-            if need_pdf and not pdf_url:
-                pdf_url = page.best_pdf_url
-            if (not need_abstract or abstract) and (not need_pdf or pdf_url):
-                break
+    artifacts = adapter_for(paper.venue).collect(
+        paper,
+        need_abstract=need_abstract,
+        need_pdf=need_pdf,
+        timeout=options.timeout,
+    )
+    abstract = artifacts.abstract
+    pdf_url = artifacts.pdf_url
+    pdf_response = artifacts.pdf_response
 
     changed_abstract = False
     changed_pdf = False
@@ -172,11 +323,13 @@ def process_paper(conn: sqlite3.Connection, paper: PaperRow, options: DownloadOp
     if need_pdf and pdf_url:
         pdf_path = pdf_output_path(options.output_dir, paper, pdf_url)
         if not options.dry_run:
-            if is_pdf_url(pdf_url):
+            if pdf_response is not None and pdf_response.is_pdf:
+                pass
+            elif is_pdf_url(pdf_url):
                 pdf_response = fetch_url(pdf_url, timeout=options.timeout)
             else:
-                pdf_response = find_pdf_response(pdf_url, landing_pages, timeout=options.timeout)
-            if not pdf_response.is_pdf:
+                pdf_response = fetch_url(pdf_url, timeout=options.timeout)
+            if pdf_response is None or not pdf_response.is_pdf:
                 raise FetchError(f"PDF URL did not return a PDF: {pdf_url}")
             pdf_path.parent.mkdir(parents=True, exist_ok=True)
             pdf_path.write_bytes(pdf_response.body)
@@ -285,16 +438,13 @@ def candidate_urls(paper: PaperRow) -> list[str]:
     return dedupe(urls)
 
 
-def find_pdf_response(
-    pdf_url: str,
-    landing_pages: Iterable[tuple[str, FetchResponse]],
-    *,
-    timeout: float,
-) -> FetchResponse:
-    for page_url, response in landing_pages:
-        if response.url == pdf_url or page_url == pdf_url:
-            return response
-    return fetch_url(pdf_url, timeout=timeout)
+def ndss_2016_current_pdf_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    old_prefix = "/ndss/wp-content/uploads/sites/25/"
+    if parsed.netloc == "wp.internetsociety.org" and parsed.path.startswith(old_prefix):
+        relative_path = parsed.path[len(old_prefix) :]
+        return f"https://www.ndss-symposium.org/wp-content/uploads/{relative_path}"
+    return url
 
 
 def fetch_url(url: str, *, timeout: float) -> FetchResponse:
@@ -312,6 +462,48 @@ def fetch_url(url: str, *, timeout: float) -> FetchResponse:
 
 class FetchError(RuntimeError):
     pass
+
+
+def extract_abstract_from_pdf_response(response: FetchResponse) -> str | None:
+    if not response.is_pdf:
+        raise FetchError(f"PDF abstract extraction did not receive a PDF: {response.url}")
+    text = pdf_bytes_to_text(response.body, max_pages=PDF_ABSTRACT_MAX_PAGES)
+    return extract_abstract_from_text(text)
+
+
+def pdf_bytes_to_text(pdf_bytes: bytes, *, max_pages: int) -> str:
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext is None:
+        raise FetchError("pdftotext is required for PDF abstract extraction")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "paper.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        completed = subprocess.run(
+            [pdftotext, "-f", "1", "-l", str(max_pages), str(pdf_path), "-"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if completed.returncode != 0:
+        stderr = clean_text(completed.stderr)
+        raise FetchError(f"pdftotext failed: {stderr or 'unknown error'}")
+    return completed.stdout
+
+
+def extract_abstract_from_text(text: str) -> str | None:
+    match = PDF_ABSTRACT_BOUNDARY_RE.search(text)
+    if match:
+        candidate = clean_text(match.group("body"))
+        return candidate if looks_like_abstract(candidate) else None
+
+    start = PDF_ABSTRACT_START_RE.search(text)
+    if start is None:
+        return None
+    candidate = clean_text(text[start.end() : start.end() + 3000])
+    if not looks_like_abstract(candidate):
+        return None
+    return candidate
 
 
 class PaperPageParser(HTMLParser):

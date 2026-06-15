@@ -91,6 +91,11 @@ The downloader stores PDFs under `data/raw/pdf/<venue>/<year>/` and updates
 `abstract`, `pdf_url`, and `pdf_path` in SQLite. Use `--dry-run` before larger
 crawls and `--sleep` for polite venue crawling.
 
+NDSS pages do not expose abstracts consistently across years. The NDSS adapter
+uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and
+2018-2022 extract abstracts from the first pages of the paper PDF. PDF text
+extraction requires `pdftotext` from Poppler.
+
 ## Next Adapters
 
 * Venue pages:
