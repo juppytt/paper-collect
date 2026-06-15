@@ -40,7 +40,8 @@ class DownloadTests(unittest.TestCase):
                 ee_json text not null,
                 abstract text,
                 pdf_url text,
-                pdf_path text
+                pdf_path text,
+                text_path text
             )
             """
         )
@@ -351,6 +352,7 @@ class DownloadTests(unittest.TestCase):
                     abstract text,
                     pdf_url text,
                     pdf_path text,
+                    text_path text,
                     updated_at text
                 )
                 """
@@ -420,7 +422,8 @@ def select_papers_from_fixture():
             ee_json text not null,
             abstract text,
             pdf_url text,
-            pdf_path text
+            pdf_path text,
+            text_path text
         )
         """
     )

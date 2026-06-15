@@ -100,6 +100,7 @@ class PaperRow:
     abstract: str | None
     pdf_url: str | None
     pdf_path: str | None
+    text_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,7 @@ class SPDownloader(VenueDownloader):
         need_abstract: bool,
         need_pdf: bool,
         timeout: float,
+        options: DownloadOptions | None = None,
     ) -> CollectedArtifacts:
         article = self._article_for_paper(paper, timeout=timeout)
         detail: dict[str, object] = {}
@@ -699,7 +701,7 @@ def select_papers(
 
     where = " where " + " and ".join(clauses) if clauses else ""
     sql = f"""
-        select id, dblp_key, venue, year, title, doi, ee_json, abstract, pdf_url, pdf_path
+        select id, dblp_key, venue, year, title, doi, ee_json, abstract, pdf_url, pdf_path, text_path
         from papers
         {where}
         order by venue, year desc, title
@@ -724,6 +726,7 @@ def row_to_paper(row: sqlite3.Row | tuple[object, ...]) -> PaperRow:
         abstract=str(row[7]) if row[7] else None,
         pdf_url=str(row[8]) if row[8] else None,
         pdf_path=str(row[9]) if row[9] else None,
+        text_path=str(row[10]) if len(row) > 10 and row[10] else None,
     )
 
 

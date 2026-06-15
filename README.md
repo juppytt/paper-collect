@@ -113,6 +113,22 @@ server without a display, try `--browser-headless`, but headed Chrome or Xvfb ma
 be more reliable with ACM. At 20 seconds per paper, the 2010-2022 CCS DOI set
 takes at least about 11 hours before browser and download overhead.
 
+After PDFs are downloaded, extract body text with Poppler's `pdftotext`:
+
+```bash
+PYTHONPATH=src python3 -m paper_collect.cli extract-text \
+  --db data/paper_collect.sqlite \
+  --venues ccs \
+  --year-from 2010 \
+  --year-to 2022 \
+  --output-dir data/raw
+```
+
+The command reads `pdf_path`, writes text files under
+`data/raw/text/<venue>/<year>/`, and updates `text_path` in SQLite. Use
+`--force` to regenerate existing text and `--pdftotext /path/to/pdftotext` if
+Poppler is not on `PATH`.
+
 NDSS pages do not expose abstracts consistently across years. The NDSS downloader
 uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and
 2018-2022 extract abstracts from the first pages of the paper PDF. PDF text
@@ -140,5 +156,5 @@ title, and resolves abstracts and PDS PDF endpoints.
 	* CCS PDF collection can use ACM browser download, and should still prefer
 	  non-ACM OA repository PDFs when available.
 * Text extraction:
-	* GROBID or S2ORC doc2json should be used for full-text extraction instead
-	  of hand-written PDF parsing.
+	* Current full-text extraction uses Poppler `pdftotext` over downloaded PDFs.
+	  GROBID or S2ORC doc2json can be added later for structured section parsing.

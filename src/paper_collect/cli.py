@@ -9,6 +9,7 @@ from pathlib import Path
 from .db import import_dblp
 from .dblp import DEFAULT_MAX_YEAR, DEFAULT_VENUES, collect_sample_records, normalize_venues, summarize_dblp
 from .download import DownloadOptions, download_papers
+from .text import ExtractTextOptions, extract_texts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +68,28 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--sleep", type=float, default=0.0, help="Delay between papers in seconds.")
     download.add_argument("--chrome-path", default=None, help="Chrome/Chromium binary for browser-based downloaders.")
     download.add_argument("--browser-headless", action="store_true", help="Run browser-based downloaders in headless mode.")
+
+    extract_text = subparsers.add_parser("extract-text", help="Extract full text from downloaded PDF files.")
+    extract_text.add_argument("--db", required=True, type=Path, help="SQLite manifest path.")
+    extract_text.add_argument(
+        "--venues",
+        nargs="+",
+        default=None,
+        help="Venue codes: sp, ccs, security, uss, ndss. Omit to include all venues.",
+    )
+    extract_text.add_argument("--year", type=int, default=None, help="Exact publication year.")
+    extract_text.add_argument("--year-from", type=int, default=None, help="Inclusive lower publication year.")
+    extract_text.add_argument("--year-to", type=int, default=None, help="Inclusive upper publication year.")
+    extract_text.add_argument("--paper-id", dest="paper_ids", action="append", type=int, default=[], help="Manifest paper id.")
+    extract_text.add_argument("--dblp-key", dest="dblp_keys", action="append", default=[], help="Exact DBLP key.")
+    extract_text.add_argument("--title-contains", default=None, help="Case-insensitive title substring filter.")
+    extract_text.add_argument("--output-dir", type=Path, default=Path("data/raw"), help="Root directory for extracted text.")
+    extract_text.add_argument("--limit", type=int, default=None, help="Maximum rows to process.")
+    extract_text.add_argument("--force", action="store_true", help="Refresh text even if text_path already exists.")
+    extract_text.add_argument("--dry-run", action="store_true", help="Resolve rows without writing text files or DB updates.")
+    extract_text.add_argument("--timeout", type=float, default=120.0, help="Per-PDF pdftotext timeout in seconds.")
+    extract_text.add_argument("--pdftotext", default=None, help="Path to pdftotext binary.")
+    extract_text.add_argument("--min-chars", type=int, default=1, help="Minimum extracted character count.")
 
     return parser
 
@@ -131,6 +154,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         with sqlite3.connect(args.db) as conn:
             result = download_papers(
+                conn,
+                venues=venues,
+                year=args.year,
+                year_from=args.year_from,
+                year_to=args.year_to,
+                paper_ids=args.paper_ids,
+                dblp_keys=args.dblp_keys,
+                title_contains=args.title_contains,
+                options=options,
+            )
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "extract-text":
+        venues = normalize_venues(args.venues) if args.venues else None
+        options = ExtractTextOptions(
+            output_dir=args.output_dir,
+            force=args.force,
+            dry_run=args.dry_run,
+            limit=args.limit,
+            timeout=args.timeout,
+            pdftotext_path=args.pdftotext,
+            min_chars=args.min_chars,
+        )
+        with sqlite3.connect(args.db) as conn:
+            result = extract_texts(
                 conn,
                 venues=venues,
                 year=args.year,
