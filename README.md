@@ -37,23 +37,35 @@ It does not include abstracts or paper full text.
 
 ## Commands
 
-Run commands from the repository root:
+Install the CLI once from the repository root:
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli dblp-summary \
+python3 -m pip install -e .
+```
+
+For CCS browser downloads, install the browser extra instead:
+
+```bash
+python3 -m pip install -e '.[browser]'
+```
+
+The package exports the `paper-collect` command through `pyproject.toml`.
+
+```bash
+paper-collect dblp-summary \
   --xml data/raw/dblp/dblp.xml.gz \
   --max-year 2022
 ```
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli dblp-sample \
+paper-collect dblp-sample \
   --xml data/raw/dblp/dblp.xml.gz \
   --max-year 2022 \
   --limit 5
 ```
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli dblp-import \
+paper-collect dblp-import \
   --xml data/raw/dblp/dblp.xml.gz \
   --db data/paper_collect.sqlite \
   --max-year 2022
@@ -69,7 +81,7 @@ sqlite3 data/paper_collect.sqlite \
 Download abstracts, PDFs, or both from selected manifest rows:
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli download \
+paper-collect download \
   --db data/paper_collect.sqlite \
   --target abstract \
   --venues security ndss \
@@ -79,7 +91,7 @@ PYTHONPATH=src python3 -m paper_collect.cli download \
 ```
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli download \
+paper-collect download \
   --db data/paper_collect.sqlite \
   --target pdf \
   --venues ndss \
@@ -96,8 +108,7 @@ receive ACM's Cloudflare challenge at `dl.acm.org`. Install the browser extra
 and run CCS slowly:
 
 ```bash
-python3 -m pip install -e '.[browser]'
-PYTHONPATH=src python3 -m paper_collect.cli download \
+paper-collect download \
   --db data/paper_collect.sqlite \
   --target pdf \
   --venues ccs \
@@ -116,7 +127,7 @@ takes at least about 11 hours before browser and download overhead.
 After PDFs are downloaded, extract body text with Poppler's `pdftotext`:
 
 ```bash
-PYTHONPATH=src python3 -m paper_collect.cli extract-text \
+paper-collect extract-text \
   --db data/paper_collect.sqlite \
   --venues ccs \
   --year-from 2010 \
@@ -127,7 +138,22 @@ PYTHONPATH=src python3 -m paper_collect.cli extract-text \
 The command reads `pdf_path`, writes text files under
 `data/raw/text/<venue>/<year>/`, and updates `text_path` in SQLite. Use
 `--force` to regenerate existing text and `--pdftotext /path/to/pdftotext` if
-Poppler is not on `PATH`.
+Poppler is not on `PATH`. Use `--delete-pdfs` to delete each PDF after text
+extraction succeeds and clear `pdf_path` in SQLite:
+
+```bash
+paper-collect extract-text \
+  --db data/paper_collect.sqlite \
+  --venues ccs \
+  --year-from 2010 \
+  --year-to 2022 \
+  --output-dir data/raw \
+  --delete-pdfs
+```
+
+Keep the CLI as the source of truth for now. If repeated runs need many stable
+settings, add a YAML config that maps directly onto the same command options
+rather than introducing separate behavior.
 
 NDSS pages do not expose abstracts consistently across years. The NDSS downloader
 uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and

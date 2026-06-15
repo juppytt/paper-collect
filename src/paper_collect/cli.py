@@ -90,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     extract_text.add_argument("--timeout", type=float, default=120.0, help="Per-PDF pdftotext timeout in seconds.")
     extract_text.add_argument("--pdftotext", default=None, help="Path to pdftotext binary.")
     extract_text.add_argument("--min-chars", type=int, default=1, help="Minimum extracted character count.")
+    extract_text.add_argument(
+        "--delete-pdfs",
+        action="store_true",
+        help="Delete each PDF after text extraction succeeds and clear pdf_path in SQLite.",
+    )
 
     return parser
 
@@ -177,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             pdftotext_path=args.pdftotext,
             min_chars=args.min_chars,
+            delete_pdfs=args.delete_pdfs,
         )
         with sqlite3.connect(args.db) as conn:
             result = extract_texts(
