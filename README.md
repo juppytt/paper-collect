@@ -1,26 +1,77 @@
 # paper-collect
 
-Reusable paper collection utilities for large-scale literature corpora.
+`paper-collect` is a CLI for collecting papers from publication metadata. It
+starts from a DBLP XML file, creates a SQLite manifest, downloads abstracts and
+PDFs when available, and extracts text from downloaded PDFs.
 
-The first supported workflow builds a seed manifest from a local DBLP XML dump.
-Downstream projects can then enrich those seed rows with venue pages, abstracts,
-PDF links, downloaded PDFs, and extracted full text.
+Workflow:
 
-## Current Scope
+1. Download the DBLP XML file.
+2. Import papers from the venues and years you want into `data/paper_collect.sqlite`.
+3. Download abstracts and/or PDFs for those papers.
+4. Extract `.txt` files from the PDFs.
 
-* Stream-parse `dblp.xml.gz` without expanding the full file on disk.
-* Select main-conference papers by exact DBLP `crossref`.
-* Support the first security corpus venues:
-	* `sp`: IEEE Symposium on Security and Privacy
-	* `ccs`: ACM CCS
-	* `security`: USENIX Security Symposium
-	* `ndss`: Network and Distributed System Security Symposium
-* Store a normalized seed manifest in SQLite.
-* Download abstracts and PDFs from manifest rows using venue/DOI links where
-  direct crawling is allowed.
-* Keep raw downloads and generated databases out of git.
+Supported venue codes:
+
+| Code | Venue |
+| --- | --- |
+| `sp` | IEEE Symposium on Security and Privacy |
+| `ccs` | ACM CCS |
+| `security` | USENIX Security Symposium |
+| `ndss` | Network and Distributed System Security Symposium |
+
+## Setup
+
+Install the CLI from the repository root:
+
+```bash
+python3 -m pip install -e .
+```
+
+To collect CCS papers from ACM, install the browser dependency too:
+
+```bash
+python3 -m pip install -e '.[browser]'
+```
+
+Text extraction requires Poppler's `pdftotext` command:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install poppler-utils
+
+# macOS
+brew install poppler
+```
+
+CCS PDF downloads also require Chrome or Chromium. Use `--chrome-path` if the
+browser is not on a standard path.
+
+## Prepare DBLP Input
+
+Download `dblp.xml.gz` and `dblp.dtd` from DBLP:
+
+```text
+https://dblp.org/xml/
+```
+
+Place both files here:
+
+```text
+data/raw/dblp/
+  dblp.xml.gz
+  dblp.dtd
+```
+
+DBLP provides metadata only: title, authors, year, venue, pages, DOI links, and
+DBLP page links. It does not provide abstracts, PDFs, or paper text.
+
+You do not need to unpack `dblp.xml.gz`. The CLI reads the compressed file
+directly.
 
 ## Data Layout
+
+The default local layout is:
 
 ```text
 data/
@@ -28,28 +79,18 @@ data/
     dblp/
       dblp.xml.gz
       dblp.dtd
+    pdf/
+      <venue>/<year>/*.pdf
+    text/
+      <venue>/<year>/*.txt
   paper_collect.sqlite
 ```
 
-DBLP's XML export is metadata only. It includes titles, authors, years,
-booktitles, pages, crossrefs, DBLP page URLs, and electronic-edition links.
-It does not include abstracts or paper full text.
+`data/` is ignored by git.
 
-## Commands
+## Build The Manifest
 
-Install the CLI once from the repository root:
-
-```bash
-python3 -m pip install -e .
-```
-
-For CCS browser downloads, install the browser extra instead:
-
-```bash
-python3 -m pip install -e '.[browser]'
-```
-
-The package exports the `paper-collect` command through `pyproject.toml`.
+First, check how many DBLP entries match the venues and years you want:
 
 ```bash
 paper-collect dblp-summary \
@@ -57,6 +98,8 @@ paper-collect dblp-summary \
   --year-from 2013 \
   --year-to 2022
 ```
+
+Inspect a few matched entries before importing:
 
 ```bash
 paper-collect dblp-sample \
@@ -66,6 +109,8 @@ paper-collect dblp-sample \
   --limit 5
 ```
 
+Import the matched entries into SQLite:
+
 ```bash
 paper-collect dblp-import \
   --xml data/raw/dblp/dblp.xml.gz \
@@ -74,14 +119,23 @@ paper-collect dblp-import \
   --year-to 2022
 ```
 
-After importing, inspect the manifest with:
+The import stores the matched papers in the `papers` table. It identifies
+venues by DBLP proceedings IDs such as `conf/ccs/2022` and `conf/uss/2022`, not
+by title keywords.
+
+Check the imported counts:
 
 ```bash
 sqlite3 data/paper_collect.sqlite \
   'select venue, count(*) from papers group by venue order by venue;'
 ```
 
-Download abstracts, PDFs, or both from selected manifest rows:
+## Download Abstracts And PDFs
+
+Use `download` after the manifest exists. Start with `--dry-run` or a small
+`--limit` when trying a new venue/year range.
+
+Download abstracts for papers that match your filters:
 
 ```bash
 paper-collect download \
@@ -93,6 +147,8 @@ paper-collect download \
   --limit 20
 ```
 
+Download PDFs:
+
 ```bash
 paper-collect download \
   --db data/paper_collect.sqlite \
@@ -102,88 +158,117 @@ paper-collect download \
   --output-dir data/raw
 ```
 
-The downloader stores PDFs under `data/raw/pdf/<venue>/<year>/` and updates
-`abstract`, `pdf_url`, and `pdf_path` in SQLite. Use `--dry-run` before larger
-crawls and `--sleep` for polite venue crawling.
+Download both abstracts and PDFs:
 
-CCS PDF downloads use a real Chrome/Chromium browser because plain HTTP clients
-receive ACM's Cloudflare challenge at `dl.acm.org`. Install the browser extra
-and run CCS slowly:
+```bash
+paper-collect download \
+  --db data/paper_collect.sqlite \
+  --target both \
+  --venues sp security ndss \
+  --year-from 2013 \
+  --year-to 2022 \
+  --output-dir data/raw \
+  --sleep 2
+```
+
+The command updates these SQLite columns when it succeeds:
+
+| Column | Meaning |
+| --- | --- |
+| `abstract` | Extracted abstract text, when available |
+| `pdf_url` | Remote PDF URL used by the downloader |
+| `pdf_path` | Local path under `data/raw/pdf/<venue>/<year>/` |
+
+Common filters:
+
+| Option | Use |
+| --- | --- |
+| `--venues ccs ndss` | Include only selected venues |
+| `--year 2022` | Include one year |
+| `--year-from 2013 --year-to 2022` | Include a year range |
+| `--paper-id 123` | Include one paper by its manifest ID |
+| `--dblp-key conf/ccs/Example22` | Include one DBLP key |
+| `--title-contains keyword` | Include titles containing a string |
+| `--force` | Refresh existing artifacts |
+| `--dry-run` | Preview matched papers and URLs without writing files |
+| `--sleep 2` | Wait between papers |
+
+### CCS Downloads
+
+ACM often blocks plain HTTP clients at `dl.acm.org`, so CCS PDF downloads use a
+real Chrome/Chromium browser.
 
 ```bash
 paper-collect download \
   --db data/paper_collect.sqlite \
   --target pdf \
   --venues ccs \
-  --year-from 2010 \
+  --year-from 2013 \
   --year-to 2022 \
   --output-dir data/raw \
   --sleep 20 \
   --timeout 90
 ```
 
-Use `--chrome-path /path/to/chrome` if Chrome is not on a standard path. On a
-server without a display, try `--browser-headless`, but headed Chrome or Xvfb may
-be more reliable with ACM. At 20 seconds per paper, the 2010-2022 CCS DOI set
-takes at least about 11 hours before browser and download overhead.
+Headed Chrome is usually more reliable for ACM. If you are running without a
+display, you can try `--browser-headless`, but be prepared to rerun failures.
 
-After PDFs are downloaded, extract body text with Poppler's `pdftotext`:
+### Venue Notes
+
+| Venue | Downloader behavior |
+| --- | --- |
+| `sp` | Uses IEEE Computer Society CSDL APIs to resolve abstracts and PDF endpoints. |
+| `ccs` | Uses ACM DOI links and browser-based PDF download. |
+| `security` | Uses DBLP electronic-edition links and generic HTML/PDF discovery. |
+| `ndss` | Uses NDSS pages and year-specific fallbacks when abstracts are only available inside PDFs. |
+
+## Extract Text From PDFs
+
+After PDFs are downloaded, extract text:
 
 ```bash
 paper-collect extract-text \
   --db data/paper_collect.sqlite \
   --venues ccs \
-  --year-from 2010 \
+  --year-from 2013 \
   --year-to 2022 \
   --output-dir data/raw
 ```
 
-The command reads `pdf_path`, writes text files under
-`data/raw/text/<venue>/<year>/`, and updates `text_path` in SQLite. Use
-`--force` to regenerate existing text and `--pdftotext /path/to/pdftotext` if
-Poppler is not on `PATH`. Use `--delete-pdfs` to delete each PDF after text
-extraction succeeds and clear `pdf_path` in SQLite:
+The command reads `pdf_path`, writes `.txt` files under
+`data/raw/text/<venue>/<year>/`, and updates `text_path` in SQLite.
+
+Useful options:
+
+| Option | Use |
+| --- | --- |
+| `--force` | Regenerate text even when `text_path` already exists |
+| `--pdftotext /path/to/pdftotext` | Use a specific Poppler binary |
+| `--timeout 120` | Set the per-PDF extraction timeout |
+| `--min-chars 100` | Treat very short extraction output as failure |
+| `--delete-pdfs` | Delete each PDF after text extraction succeeds |
+
+Only use `--delete-pdfs` if you are sure you will not need the PDFs for
+debugging or re-extraction:
 
 ```bash
 paper-collect extract-text \
   --db data/paper_collect.sqlite \
   --venues ccs \
-  --year-from 2010 \
+  --year-from 2013 \
   --year-to 2022 \
   --output-dir data/raw \
   --delete-pdfs
 ```
 
-Keep the CLI as the source of truth for now. If repeated runs need many stable
-settings, add a YAML config that maps directly onto the same command options
-rather than introducing separate behavior.
+## TODO
 
-NDSS pages do not expose abstracts consistently across years. The NDSS downloader
-uses explicit year policies: 2010-2015 and 2017 parse HTML abstracts; 2016 and
-2018-2022 extract abstracts from the first pages of the paper PDF. PDF text
-extraction requires `pdftotext` from Poppler.
-
-S&P uses IEEE Computer Society CSDL instead of DOI landing pages. The S&P
-downloader queries the CSDL proceedings group, maps the target year to a
-proceeding ID, matches CSDL article rows against DBLP rows by DOI or normalized
-title, and resolves abstracts and PDS PDF endpoints.
-
-## Next Downloaders
-
-* Venue pages:
-	* USENIX Security proceedings pages usually expose paper pages, abstracts,
-	  and PDF links directly.
-	* NDSS paper pages expose direct PDF links; sampled 2022 pages did not expose
-	  HTML abstracts.
-	* IEEE S&P uses CSDL GraphQL/PDS endpoints instead of DOI landing pages.
-	* CCS browser PDF download works from ACM DOI links; abstracts and
-	  full-paper filtering still need SIGSAC/OpenAlex enrichment.
-* Open metadata APIs:
-	* Semantic Scholar, Unpaywall, and OpenAlex can enrich DOI, abstract,
-	  open-access URL, and license fields when official venue pages are
-	  incomplete.
-	* CCS PDF collection can use ACM browser download, and should still prefer
-	  non-ACM OA repository PDFs when available.
-* Text extraction:
-	* Current full-text extraction uses Poppler `pdftotext` over downloaded PDFs.
-	  GROBID or S2ORC doc2json can be added later for structured section parsing.
+* Add safer handling for PDF line-break hyphenation during text extraction or
+  lookup/indexing.
+* Add structured PDF parsing with GROBID or S2ORC doc2json.
+* Improve CCS metadata filtering so workshop and poster entries can be separated
+  from main-conference papers when needed.
+* Prefer open-access PDFs when an official venue page does not expose a direct
+  PDF URL.
+* Add a config file only if repeated runs need many stable options. The config
+  should map directly to the existing CLI flags.
