@@ -15,8 +15,10 @@ from paper_collect.download import (
     PaperPageParser,
     PaperRow,
     SPDownloader,
+    SecurityDownloader,
     acm_pdf_url,
     csdl_pdf_url,
+    downloader_for,
     extract_abstract_from_text,
     ndss_2016_current_pdf_url,
     pdf_output_path,
@@ -166,8 +168,8 @@ class DownloadTests(unittest.TestCase):
             body=b"%PDF-1.5",
         )
 
-        with mock.patch("paper_collect.download.fetch_url", side_effect=[landing, pdf]):
-            with mock.patch("paper_collect.download.extract_abstract_from_pdf_response", return_value=abstract):
+        with mock.patch("paper_collect.downloaders.ndss.fetch_url", side_effect=[landing, pdf]):
+            with mock.patch("paper_collect.downloaders.ndss.extract_abstract_from_pdf_response", return_value=abstract):
                 changed_abstract, changed_pdf = process_paper(conn, paper, options)
 
         self.assertTrue(changed_abstract)
@@ -202,8 +204,8 @@ class DownloadTests(unittest.TestCase):
             """.encode(),
         )
 
-        with mock.patch("paper_collect.download.fetch_url", return_value=landing):
-            with mock.patch("paper_collect.download.extract_abstract_from_pdf_response") as extract_pdf:
+        with mock.patch("paper_collect.downloaders.ndss.fetch_url", return_value=landing):
+            with mock.patch("paper_collect.downloaders.ndss.extract_abstract_from_pdf_response") as extract_pdf:
                 changed_abstract, changed_pdf = process_paper(conn, paper, options)
 
         extract_pdf.assert_not_called()
@@ -238,8 +240,8 @@ class DownloadTests(unittest.TestCase):
         abstract = " ".join(["This paper studies text captcha attacks."] * 12)
         pdf = FetchResponse(url=current_url, content_type="application/pdf", body=b"%PDF-1.5")
 
-        with mock.patch("paper_collect.download.fetch_url", return_value=pdf) as fetch_url:
-            with mock.patch("paper_collect.download.extract_abstract_from_pdf_response", return_value=abstract):
+        with mock.patch("paper_collect.downloaders.ndss.fetch_url", return_value=pdf) as fetch_url:
+            with mock.patch("paper_collect.downloaders.ndss.extract_abstract_from_pdf_response", return_value=abstract):
                 changed_abstract, changed_pdf = process_paper(conn, paper, options)
 
         fetch_url.assert_called_once_with(current_url, timeout=30.0)
@@ -293,11 +295,45 @@ class DownloadTests(unittest.TestCase):
             }
         }
 
-        with mock.patch("paper_collect.download.post_graphql_json", side_effect=[proceedings, toc, detail]):
+        with mock.patch("paper_collect.downloaders.sp.post_graphql_json", side_effect=[proceedings, toc, detail]):
             artifacts = SPDownloader().collect(paper, need_abstract=True, need_pdf=True, timeout=30.0)
 
         self.assertEqual(artifacts.abstract, abstract)
         self.assertEqual(artifacts.pdf_url, csdl_pdf_url("1FlQIbn9p7y"))
+
+    def test_security_downloader_uses_generic_page_discovery(self) -> None:
+        abstract = " ".join(["This paper studies web security measurement."] * 12)
+        paper = PaperRow(
+            id=1,
+            dblp_key="conf/uss/Example22",
+            venue="security",
+            year=2022,
+            title="Example USENIX Security Paper",
+            doi=None,
+            ee=("https://www.usenix.org/conference/usenixsecurity22/presentation/example",),
+            abstract=None,
+            pdf_url=None,
+            pdf_path=None,
+        )
+        landing = FetchResponse(
+            url="https://www.usenix.org/conference/usenixsecurity22/presentation/example",
+            content_type="text/html; charset=UTF-8",
+            body=f"""
+            <html>
+              <body>
+                <div class="field-paper-description">{abstract}</div>
+                <a href="https://www.usenix.org/system/files/sec22-example.pdf">Paper PDF</a>
+              </body>
+            </html>
+            """.encode(),
+        )
+
+        with mock.patch("paper_collect.downloaders.generic.fetch_url", return_value=landing):
+            artifacts = SecurityDownloader().collect(paper, need_abstract=True, need_pdf=True, timeout=30.0)
+
+        self.assertIsInstance(downloader_for("security"), SecurityDownloader)
+        self.assertEqual(artifacts.abstract, abstract)
+        self.assertEqual(artifacts.pdf_url, "https://www.usenix.org/system/files/sec22-example.pdf")
 
     def test_ccs_downloader_uses_acm_pdf_url_for_doi_dry_run(self) -> None:
         paper = PaperRow(
